@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+langchain_core
+langchain_chroma
+langchain_huggingface
+sentence-transformers
+chromadb
+huggingface-hub
