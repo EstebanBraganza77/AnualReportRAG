@@ -16,3 +16,4 @@ pydantic
 typing-extensions
 openai
 together
+langchain_comminity
