@@ -2,7 +2,7 @@
 
 ## 🔍 Overview
 
-This project is a Retrieval-Augmented Generation (RAG) system designed to query information from multiple years of company annual reports. It provides a FastAPI-based REST API backed by a local or hosted ChromaDB vector store.
+This project is a Retrieval-Augmented Generation (RAG) system designed to query information from multiple years of company annual reports. It provides a FastAPI-based REST API backed by a local or hosted ChromaDB vector store and streaemlit QA Agent that answers questions regarding to the company's Annual Report.
 
 ---
 
