@@ -16,4 +16,6 @@ pydantic
 typing-extensions
 openai
 together
-langchain_comminity
+langchain_chroma
+langchain_together
+langchain_community

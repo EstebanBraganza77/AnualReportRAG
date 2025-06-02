@@ -36,7 +36,9 @@ async def query_vector_db(query: Query):
     ]
     
     if query.section:
-        filter_conditions.append({"section_title": {"$eq": query.section}})
+        filter_conditions.append({
+            "section_title": {"$eq": query.section}
+            })
     
     # Create the filter with proper ChromaDB structure
     filters = {"$and": filter_conditions}

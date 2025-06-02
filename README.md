@@ -2,7 +2,7 @@
 
 ## 🔍 Overview
 
-This project is a Retrieval-Augmented Generation (RAG) system designed to query information from multiple years of company annual reports. It provides a FastAPI-based REST API backed by a local or hosted ChromaDB vector store.
+This project is a Retrieval-Augmented Generation (RAG) system designed to query information from multiple years of company annual reports. It provides a FastAPI-based REST API backed by a local or hosted ChromaDB vector store and streaemlit QA Agent that answers questions regarding to the company's Annual Report.
 
 ---
 
@@ -74,16 +74,21 @@ This project is a Retrieval-Augmented Generation (RAG) system designed to query 
 
 ```
 project-root/
-├── app/
-│   ├── api.py                # FastAPI app
-│   ├── rag_utils.py          # Query + Retrieval logic
-│   ├── vector_db.py          # DB creation/loading
-│   ├── chunker.py            # Section chunking logic
-├── scripts/
-│   └── build_db.py           # CLI to build Chroma DB from PDFs
+├── api/
+│   ├── chromadb/  
+│   ├── main.py # FastAPI app
+│   ├── models.py
+    ├── Dockerfile
+
+├── database/
+│   └── __init__.py
+│   └── documents.py 
+│   └── generate_vdb.py 
+│   └── pdf_extractor.py
+            
 ├── data/
-│   └── chroma_db/            # Vector store folder
-├── Dockerfile
+│   └── annual_reports/           
+
 ├── requirements.txt
 ├── .env
 └── README.md
