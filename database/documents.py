@@ -1,9 +1,15 @@
 import os
 import re
+import json
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.schema import Document
+from openai import OpenAI
+from typing import List, Dict, Optional
+from pydantic import BaseModel
+
 
 class DMartARExtractor:
+
     """
     Extracts and processes section-wise content from DMart Annual Reports in PDF format.
 
@@ -14,7 +20,7 @@ class DMartARExtractor:
         docs (list): List of Document objects representing pages of the PDF.
     """
 
-    def __init__(self, pdf_path, year, ticker):
+    def __init__(self, pdf_path, year, ticker, api_key: str):
         """
         Initializes the extractor with the PDF file, year, and ticker.
 
@@ -27,6 +33,10 @@ class DMartARExtractor:
         self.year = year
         self.ticker = ticker
         self.docs = PyPDFLoader(pdf_path).load()
+        self.section_descriptions_path = "./section_descriptions.json"
+        self.client = OpenAI(api_key=api_key)
+ 
+
 
     def extract_index(self):
         """
@@ -129,6 +139,13 @@ class DMartARExtractor:
             ]
 
             section_text = "\n\n".join([page.page_content for page in pages_in_section])
+            try:
+                section_description = self.generate_section_description(section["title"], section_text)
+                added_description = self.add_new_section_description(section_description)
+            except Exception as e:
+                added_description = None
+                print(f"Error generating description for section: {section['title']} - {e}")
+
 
             section_doc = Document(
                 page_content=section_text,
@@ -144,6 +161,65 @@ class DMartARExtractor:
             self.section_documents.append(section_doc)
 
         return self.section_documents
+
+    def generate_section_description(self, section: str, context: str) -> dict:
+ 
+        prompt = f"""
+        You are an expert financial analyst. Given a section title and its content, generate a clear and informative description that outlines what type of information this section contains.
+
+        Do not summarize every detail. Instead, highlight the general purpose and scope of the section so that another language model can determine whether the section is relevant to a given question.
+
+        The description should be no more than 200 words and should convey what kind of content the section includes (e.g., financial performance, governance policies, risk disclosures, operational metrics, etc.).
+
+        ### Section Title: {section}
+    """
+
+        response = self.client.responses.create(
+            model="gpt-4o-mini",
+            instructions=prompt,
+            input=context,
+            temperature=0
+        )
+        description = response.output[0].content[0].text.strip()
+
+        return {
+            "section": section,
+            "description": description
+        }
+
+    def add_new_section_description(self, description_dict: dict) -> None:
+        """
+        Adds a new section description to the section descriptions file.
+
+        Args:
+            description_dict (dict): Dictionary with one section-title: description pair
+        """
+
+        file_path = self.section_descriptions_path
+
+        # Asegúrate de que el archivo existe y no está vacío
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            with open(file_path, "w") as file:
+                json.dump({}, file)
+
+        # Leer el contenido existente
+        with open(file_path, "r") as file:
+            data = json.load(file)
+
+        # Inicializar estructura si no existe
+        if self.ticker not in data:
+            data[self.ticker] = {}
+
+        if str(self.year) not in data[self.ticker]:
+            data[self.ticker][str(self.year)] = {}
+
+        # Agregar descripción al diccionario
+        
+        data[self.ticker][str(self.year)][description_dict.get('section', '')] = description_dict.get('description', '')
+
+        # Escribir el nuevo contenido
+        with open(file_path, "w", encoding='utf-8') as file:
+            json.dump(data, file, indent=4)
 
 
 class MRFARVectorizer:
