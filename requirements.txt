@@ -19,3 +19,5 @@ together
 langchain_chroma
 langchain_together
 langchain_community
+pytesseract
+easyocr

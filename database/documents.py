@@ -1,11 +1,18 @@
 import os
 import re
 import json
+import ast
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.schema import Document
 from openai import OpenAI
 from typing import List, Dict, Optional
 from pydantic import BaseModel
+import tempfile
+from pypdf import PdfReader
+from pdf2image import convert_from_path
+from PIL import Image
+import pytesseract
+
 
 
 class DMartARExtractor:
@@ -129,6 +136,7 @@ class DMartARExtractor:
         self.section_documents = []
 
         for section in self.sections:
+            print(section['title'])
             start = int(section["page_start"])
             end = section["page_end"]
 
@@ -141,11 +149,10 @@ class DMartARExtractor:
             section_text = "\n\n".join([page.page_content for page in pages_in_section])
             try:
                 section_description = self.generate_section_description(section["title"], section_text)
-                added_description = self.add_new_section_description(section_description)
+                self.add_new_section_description(section_description)
             except Exception as e:
-                added_description = None
                 print(f"Error generating description for section: {section['title']} - {e}")
-
+                pass
 
             section_doc = Document(
                 page_content=section_text,
@@ -159,6 +166,7 @@ class DMartARExtractor:
                 }
             )
             self.section_documents.append(section_doc)
+            print('Correctly created document', section['title'])
 
         return self.section_documents
 
@@ -177,7 +185,7 @@ class DMartARExtractor:
         response = self.client.responses.create(
             model="gpt-4o-mini",
             instructions=prompt,
-            input=context,
+            input=context[:5000],
             temperature=0
         )
         description = response.output[0].content[0].text.strip()
@@ -203,7 +211,7 @@ class DMartARExtractor:
                 json.dump({}, file)
 
         # Leer el contenido existente
-        with open(file_path, "r") as file:
+        with open(file_path, "r", encoding='utf-8') as file:
             data = json.load(file)
 
         # Inicializar estructura si no existe
@@ -222,5 +230,279 @@ class DMartARExtractor:
             json.dump(data, file, indent=4)
 
 
-class MRFARVectorizer:
-    pass
+class MRFExtractor:
+    def __init__(self, pdf_path: str, year: int, ticker: str, api_key: str, index_page: int, tesseract_path: str = None):
+        """
+        Initialize the MRF Annual Report Extractor
+        
+        Args:
+            pdf_path: Path to the PDF file
+            year: Year of the annual report
+            ticker: Company ticker symbol
+            api_key: OpenAI API key
+            tesseract_path: Optional path to Tesseract OCR executable
+        """
+        self.pdf_path = pdf_path
+        self.year = year
+        self.ticker = ticker
+        self.docs = PyPDFLoader(pdf_path).load()
+        self.section_descriptions_path = "./section_descriptions.json"
+        self.client = OpenAI(api_key=api_key)
+        self.index_page = index_page  # Page number for the table of contents
+        
+        # Configure Tesseract path if provided
+        if tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+
+    def _is_toc_image(self, page_content: str) -> bool:
+        """Check if the table of contents appears to be an image"""
+        # Heuristics for detecting image-based TOC
+        return (len(page_content.strip()) < 100 or 
+                "[Image]" in page_content or 
+                "..." in page_content or  # Common OCR artifact
+                sum(c.isalpha() for c in page_content) / len(page_content) < 0.5)  # Low text ratio
+
+    def _extract_text_from_image_page(self, page_number: int) -> str:
+        """Extract text from a specific page using OCR"""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Convert the specific page to image with high DPI
+                images = convert_from_path(
+                    self.pdf_path, 
+                    first_page=page_number,
+                    last_page=page_number,
+                    dpi=300,
+                    poppler_path='C:/poppler/Release-24.08.0-0/poppler-24.08.0/Library/bin' # Add path if needed: r'C:\path\to\poppler-xx\bin'
+                )
+                
+                if not images:
+                    return ""
+                
+                # Save temp image and perform OCR
+                temp_img_path = os.path.join(temp_dir, "toc_page.png")
+                images[0].save(temp_img_path, 'PNG')
+                
+                # Custom Tesseract config for tables/contents
+                custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+                text = pytesseract.image_to_string(
+                    Image.open(temp_img_path), 
+                    config=custom_config,
+                    lang='eng'
+                )
+                return text
+        except Exception as e:
+            print(f"OCR failed for page {page_number}: {str(e)}")
+            return ""
+
+    def extract_index(self) -> str:
+        """Extract table of contents either from text or via OCR if it's an image"""
+        try:
+            first_page = next(doc for doc in self.docs if doc.metadata.get("page") == self.index_page)
+            
+            if self._is_toc_image(first_page.page_content):
+                print("Detected image-based TOC, using OCR...")
+                ocr_text = self._extract_text_from_image_page(2)
+                return ocr_text if ocr_text else first_page.page_content
+            return first_page.page_content
+        except StopIteration:
+            print("Could not find first page")
+            return ""
+
+    def _extract_raw_text(self) -> str:
+        """Get raw text from the table of contents"""
+        return self.extract_index()
+
+    def clean_and_extract_index_mrf(self) -> None:
+        """Parse and clean the MRF table of contents"""
+        raw_text = self._extract_raw_text()
+        print(f"Raw TOC text: {raw_text}")  # Debugging output
+
+        prompt = f"""
+        You are a Python function. Convert the following Table of Contents into a JSON-like list of dictionaries.
+
+        Each dictionary must have:
+        - "title": section title
+        - "page_start": starting page number (integer)
+        - "page_end": ending page number (integer)
+
+        If "page_end" is not provided in the text, infer it by using the next section's "page_start" minus 1. For the last item, use null as "page_end".
+
+        ⚠️ Return only the list. No explanation, no extra text, no formatting outside Python list syntax.
+
+        Table of Contents:
+        {raw_text.strip()}
+        """
+        response = self.client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+
+        content = response.choices[0].message.content.strip()
+        print(f"OpenAI TOC response: {content}")  # Debugging output
+        content = self.parse_openai_toc_response(content)
+        self.sections = content
+        print(f"Extracted sections: {self.sections}")
+
+    def parse_openai_toc_response(self, content: str):
+        # 1. Quita bloques de markdown
+        content = re.sub(r"```(json)?", "", content).strip()
+
+        # 2. Reemplaza comillas “inteligentes” por comillas normales
+        content = content.replace("’", "'").replace("“", '"').replace("”", '"')
+
+        # 3. Intenta parsear con json
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass  # Falló el JSON, intenta con eval seguro
+
+        # 4. Si JSON falla, intenta con ast.literal_eval
+        try:
+            return ast.literal_eval(content)
+        except Exception as e:
+            print("Error evaluando el contenido:", e)
+            raise ValueError("No se pudo parsear el contenido como lista de diccionarios.")
+
+    def generate_section_description(self, section: str, context: str) -> dict:
+        """Generate a description of the section using OpenAI"""
+        prompt = f"""
+        You are an expert financial analyst analyzing MRF's annual report. 
+        Given a section title and content sample, create a concise description that:
+        1. Identifies the type of information contained
+        2. Explains the section's purpose
+        3. Highlights key data points typically found here
+        
+        Section Title: {section}
+        
+        Content Sample:
+        {context[0:5000]}...
+        
+        Respond with just the description (no headings or labels).
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=256
+            )
+            description = response.choices[0].message.content.strip()
+            return {"section": section, "description": description}
+        except Exception as e:
+            print(f"Error generating description for {section}: {str(e)}")
+            return {"section": section, "description": "Content section"}
+
+    def add_new_section_description(self, description_dict: dict) -> None:
+        """Store section descriptions in JSON file"""
+        try:
+            if not os.path.exists(self.section_descriptions_path):
+                with open(self.section_descriptions_path, "w") as file:
+                    json.dump({}, file)
+
+            with open(self.section_descriptions_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+
+            if self.ticker not in data:
+                data[self.ticker] = {}
+            if str(self.year) not in data[self.ticker]:
+                data[self.ticker][str(self.year)] = {}
+
+            data[self.ticker][str(self.year)][description_dict["section"]] = description_dict["description"]
+
+            with open(self.section_descriptions_path, "w", encoding='utf-8') as file:
+                json.dump(data, file, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving section description: {str(e)}")
+
+    def extract_section_documents(self) -> List[Document]:
+        """Extract all sections from the annual report as documents"""
+        self.section_documents = []
+
+        for section in self.sections:
+            start = section["page_start"] 
+            end = section["page_end"]  
+
+            # Handle cases where page numbers might be missing
+            if start == 0:
+                continue
+
+            pages_in_section = [
+                doc for doc in self.docs
+                if doc.metadata.get("page_label") and (doc.metadata["page_label"].isdigit() or isinstance(doc.metadata["page_label"], int))
+                and (start) <= int(doc.metadata["page_label"]) <= ((end) if end is not None else (start -1) )
+            ]
+
+            if not pages_in_section:
+                print(f"No pages found for section: {section['title']} (pages {start}-{end})")
+                continue
+
+            section_text = "\n\n".join([page.page_content for page in pages_in_section])
+
+
+            if section_text.strip():
+            
+                # Generate and store description
+                #try:
+                #    section_description = self.generate_section_description(section["title"], section_text)
+                #    self.add_new_section_description(section_description)
+                #except Exception as e:
+                #    print(f"Error processing section {section['title']}: {str(e)}")
+                #    raise e
+
+                # Create document with metadata
+                section_doc = Document(
+                    page_content=section_text,
+                    metadata={
+                        "year": self.year,
+                        "ticker": self.ticker,
+                        "section_title": section["title"],
+                        "page_start": start,
+                        "page_end": end,
+                        "source": os.path.basename(self.pdf_path),
+                        "report_type": "annual"
+                    }
+                )
+                self.section_documents.append(section_doc)
+
+            else:
+                print(f"Section {section['title']} is empty or contains no valid text.")
+
+        return self.section_documents
+
+    def save_sections_to_json(self, output_path: str = None) -> None:
+        """Save extracted sections to a JSON file"""
+        if not output_path:
+            output_path = f"mrf_{self.year}_sections.json"
+        
+        sections_data = []
+        for doc in self.section_documents:
+            sections_data.append({
+                "title": doc.metadata["section_title"],
+                "pages": f"{doc.metadata['page_start']}-{doc.metadata['page_end']}",
+                "content_sample": doc.page_content[:500] + "...",
+                "metadata": doc.metadata
+            })
+        
+        with open(output_path, "w", encoding='utf-8') as f:
+            json.dump(sections_data, f, indent=4, ensure_ascii=False)
+
+
+class TATAExtractor:
+    def __init__(self, pdf_path: str, year: int, ticker: str, api_key: str):
+        """
+        Initialize the TATA Annual Report Extractor
+        
+        Args:
+            pdf_path: Path to the PDF file
+            year: Year of the annual report
+            ticker: Company ticker symbol
+            api_key: OpenAI API key
+        """
+        self.pdf_path = pdf_path
+        self.year = year
+        self.ticker = ticker
+        self.docs = PyPDFLoader(pdf_path).load()
+        self.section_descriptions_path = "./section_descriptions.json"
+        self.client = OpenAI(api_key=api_key)

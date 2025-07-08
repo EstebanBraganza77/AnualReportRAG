@@ -7,3 +7,4 @@ langchain_huggingface
 sentence-transformers
 chromadb
 huggingface-hub
+langchain_openai

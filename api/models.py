@@ -12,3 +12,21 @@ class QueryResponse(BaseModel):
     source_documents: list[str]
     source_sections: list[str]
 
+class ExtractQuery(BaseModel):
+    year: int
+    ticker: str
+    section: str
+
+class ExtractQueryResponse(BaseModel):
+    section_title: str
+    text: str
+
+class ExtractSections(BaseModel):
+    year: int
+    ticker: str
+
+class SectionsResponse(BaseModel):
+    year: int
+    ticker: str
+    section_names: list
+
