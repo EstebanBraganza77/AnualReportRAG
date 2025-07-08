@@ -15,6 +15,9 @@ COPY . /app
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional: define expected env variable (value set at runtime)
+ENV OPENAI_API_KEY=""
+
 # Expose FastAPI's default port
 EXPOSE 8000
 

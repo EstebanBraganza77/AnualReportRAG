@@ -16,7 +16,7 @@ ticker = st.text_input("Company Ticker", value="DMART")
 year = st.number_input("Year", min_value=2000, max_value=2100, value=2024)
 question = st.text_area("Ask a question about the annual report", height=100)
 
-with open("section_descriptions.json", "r") as f:
+with open("./database/section_descriptions.json", "r", encoding='utf-8') as f:
     section_descriptions = json.load(f)
     section_descriptions = section_descriptions[ticker][str(year)]
 
